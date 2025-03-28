@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QApplication, QMainWindow, QGraphicsScene, QGraphicsView, QGraphicsItem
-from PyQt5.QtCore import Qt, QRectF, QPointF, QLineF
-from PyQt5.QtGui import QBrush, QPen, QColor, QPainter
+from PyQt5.QtCore import Qt, QRectF, QPointF, QLineF,QTimer
+from PyQt5.QtGui import QBrush, QPen, QColor, QPainter, QFont
 import sys
 import os
 from PyQt5 import QtCore
@@ -16,24 +16,35 @@ class ConnectionLine(QGraphicsLineItem):
         self.setPen(QPen(Qt.darkGray, 1, Qt.DashLine))
         
 class Unit(QGraphicsItem):
-    def __init__(self, x, y, size=40, color=QColor(50, 200, 50)):
+    def __init__(self, x, y, size=40, owner="player"):
         super().__init__()
         
         self.size = size
-        self.color = color
+        self.owner = owner  # "player", "pc", or "neutral"
+        
+        # Set color based on owner
+        if owner == "player":
+            self.color = QColor(50, 200, 50)  # Green
+        elif owner == "pc":
+            self.color = QColor(200, 50, 50)  # Red
+        else:  # neutral
+            self.color = QColor(150, 150, 150)  # Gray
+            
         self.connections = []  # List of other Unit instances
         self.dragging_connection = False
         self.temp_connection_line = None
+        
+        # Initialize value based on owner type
+        if owner == "neutral":
+            self.value = 10  # Neutral units start with 10
+            self.player_points = 0  # Points given by player
+            self.pc_points = 0      # Points given by PC
+        else:
+            self.value = 0
 
         self.setPos(x, y)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
-        # Remove movable flag
-        # self.setFlag(QGraphicsItem.ItemIsMovable)
         
-    def boundingRect(self):
-        # Określa "obszar roboczy" jednostki (dla kolizji, zaznaczenia itd.)
-        return QRectF(0, 0, self.size, self.size)
-
     def paint(self, painter, option, widget=None):
         # Draw lines to connected units
         pen = QPen(Qt.darkGray, 1, Qt.DashLine)
@@ -50,6 +61,97 @@ class Unit(QGraphicsItem):
         painter.setPen(pen)
         painter.setBrush(brush)
         painter.drawEllipse(0, 0, self.size, self.size)
+        
+        # Display the value in the center of the unit
+        painter.setPen(QPen(Qt.white))
+        painter.setFont(QFont("Arial", self.size // 4))
+        
+        # Special display for neutral units
+        if self.owner == "neutral":
+            # Show neutral value in brackets
+            display_text = f"[{self.value}]"
+            if self.player_points > 0:
+                display_text += f"\nP:{self.player_points}"
+            if self.pc_points > 0:
+                display_text += f"\nC:{self.pc_points}"
+        else:
+            display_text = str(self.value)
+            
+        painter.drawText(QRectF(0, 0, self.size, self.size), 
+                         Qt.AlignCenter, display_text)
+    
+    def transfer_points(self, from_unit):
+        """Transfer points from a connected unit to this unit"""
+        # If this is a neutral unit receiving points
+        if self.owner == "neutral":
+            if from_unit.owner == "player":
+                self.player_points += 1
+                # Check for takeover
+                if self.player_points >= 10:
+                    self.convert_to("player")
+            elif from_unit.owner == "pc":
+                self.pc_points += 1
+            # Check for takeover
+                if self.pc_points >= 10:
+                    self.convert_to("pc")
+    
+    # If this is a player unit and is attacked by PC unit
+        elif self.owner == "player" and from_unit.owner == "pc":
+            self.decrease_value()
+        # Check if value reached zero
+            if self.value == 0:
+                self.convert_to_neutral()
+    
+    # If this is a PC unit and is attacked by player unit
+        elif self.owner == "pc" and from_unit.owner == "player":
+            self.decrease_value()
+        # Check if value reached zero
+            if self.value == 0:
+                self.convert_to_neutral()
+            
+        self.update()
+
+    def convert_to_neutral(self):
+        """Convert unit to neutral when its value reaches zero"""
+        self.owner = "neutral"
+        self.color = QColor(150, 150, 150)  # Gray
+        self.value = 10  # Reset to default neutral value
+        self.player_points = 0
+        self.pc_points = 0
+        self.update()
+        print(f"Unit converted to neutral")
+    def convert_to(self, new_owner):
+        """Convert this unit to a new owner (player or pc)"""
+        self.owner = new_owner
+    
+    # Update color based on new owner
+        if new_owner == "player":
+            self.color = QColor(50, 200, 50)  # Green
+            self.value = self.player_points  # Set value to accumulated player points
+        elif new_owner == "pc":
+            self.color = QColor(200, 50, 50)  # Red
+            self.value = self.pc_points  # Set value to accumulated PC points
+    
+    # Reset the points counters
+        self.player_points = 0
+        self.pc_points = 0
+    
+        self.update()
+        print(f"Unit converted to {new_owner}")    
+        
+    def boundingRect(self):
+        # Określa "obszar roboczy" jednostki (dla kolizji, zaznaczenia itd.)
+        return QRectF(0, 0, self.size, self.size)
+
+    
+    def increase_value(self, amount=1):
+        self.value += amount
+        self.update()
+        
+    def decrease_value(self, amount=1):
+        self.value -= amount
+        self.value = max(0, self.value)  # Ensure value doesn't go below 0
+        self.update()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -128,16 +230,67 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Unit Connection Example")
         self.resize(850, 650)
         
+        # Install event filter to handle key presses
+        self.view.installEventFilter(self)
+        
+        # Create timer to increase unit values every second
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.increment_all_units)
+        self.timer.start(1000)  # 1000 ms = 1 second
+        
+    def increment_all_units(self):
+    # First increment all non-neutral units
+        for item in self.scene.items():
+            if isinstance(item, Unit) and item.owner != "neutral":
+                item.increase_value()
+    
+    # Now check for connections and transfer points
+        for item in self.scene.items():
+            if isinstance(item, Unit):
+            # Process connections for each unit
+                for connected_unit in item.connections:
+                # Case 1: Transfer points from player/PC to neutral units
+                    if item.owner != "neutral" and connected_unit.owner == "neutral":
+                        connected_unit.transfer_points(item)
+                
+                # Case 2: Player units attack PC units
+                    elif item.owner == "player" and connected_unit.owner == "pc":
+                        connected_unit.transfer_points(item)
+                
+                # Case 3: PC units attack player units
+                    elif item.owner == "pc" and connected_unit.owner == "player":
+                        connected_unit.transfer_points(item)     
+   
+    def eventFilter(self, source, event):
+        if source is self.view and event.type() == QtCore.QEvent.KeyPress:
+            selected_items = self.scene.selectedItems()
+            if selected_items:
+                if event.key() == Qt.Key_Plus or event.key() == Qt.Key_Equal:
+                    for item in selected_items:
+                        if isinstance(item, Unit):
+                            item.increase_value()
+                    return True
+                elif event.key() == Qt.Key_Minus:
+                    for item in selected_items:
+                        if isinstance(item, Unit):
+                            item.decrease_value()
+                    return True
+        return super().eventFilter(source, event)
+        
     def add_items(self):
-        # Dodanie jednostki na mapę
-        unit1 = Unit(150, 300, size=50, color=QColor(50, 200, 50))
+    # Player unit (green)
+        unit1 = Unit(150, 300, size=50, owner="player")
         self.scene.addItem(unit1)
 
-        unit2 = Unit(150, 150, size=50, color=QColor(200, 50, 50))
+    # Computer units (red)
+        unit2 = Unit(150, 150, size=50, owner="pc")
         self.scene.addItem(unit2)
-        
-        unit3 = Unit(300, 150, size=50, color=QColor(200, 50, 50))
+    
+        unit3 = Unit(300, 150, size=50, owner="pc")
         self.scene.addItem(unit3)
+
+        unit4 = Unit(300, 300, size=50, owner="neutral")
+        self.scene.addItem(unit4)
 
 
 if __name__ == "__main__":

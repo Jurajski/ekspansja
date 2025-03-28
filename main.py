@@ -1,13 +1,20 @@
 from PyQt5.QtWidgets import QApplication, QMainWindow, QGraphicsScene, QGraphicsView, QGraphicsItem
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtCore import Qt, QRectF, QPointF, QLineF
 from PyQt5.QtGui import QBrush, QPen, QColor, QPainter
 import sys
 import os
-from PyQt5 import QtCore  # or PySide2 if that's what you're using
-from PyQt5.QtWidgets import QGraphicsItem
+from PyQt5 import QtCore
+from PyQt5.QtWidgets import QGraphicsItem, QGraphicsLineItem
 from PyQt5.QtGui import QBrush, QPen, QColor
 from PyQt5.QtCore import QRectF, Qt
 
+class ConnectionLine(QGraphicsLineItem):
+    """Temporary line displayed during connection dragging"""
+    def __init__(self, start_pos):
+        super().__init__()
+        self.setLine(QLineF(start_pos, start_pos))
+        self.setPen(QPen(Qt.darkGray, 1, Qt.DashLine))
+        
 class Unit(QGraphicsItem):
     def __init__(self, x, y, size=40, color=QColor(50, 200, 50)):
         super().__init__()
@@ -15,12 +22,14 @@ class Unit(QGraphicsItem):
         self.size = size
         self.color = color
         self.connections = []  # List of other Unit instances
+        self.dragging_connection = False
+        self.temp_connection_line = None
 
         self.setPos(x, y)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
-        self.setFlag(QGraphicsItem.ItemIsMovable)
+        # Remove movable flag
+        # self.setFlag(QGraphicsItem.ItemIsMovable)
         
-
     def boundingRect(self):
         # Określa "obszar roboczy" jednostki (dla kolizji, zaznaczenia itd.)
         return QRectF(0, 0, self.size, self.size)
@@ -43,12 +52,54 @@ class Unit(QGraphicsItem):
         painter.drawEllipse(0, 0, self.size, self.size)
 
     def mousePressEvent(self, event):
-        print("Kliknięto jednostkę!")
-        super().mousePressEvent(event)
+        if event.button() == Qt.LeftButton:
+            # Start connection dragging on any left click
+            self.dragging_connection = True
+            start_pos = self.scenePos() + self.boundingRect().center()
+            self.temp_connection_line = ConnectionLine(start_pos)
+            self.scene().addItem(self.temp_connection_line)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+            
+    def mouseMoveEvent(self, event):
+        if self.dragging_connection and self.temp_connection_line:
+            # Update temp line endpoint to follow mouse
+            start_pos = self.scenePos() + self.boundingRect().center()
+            mouse_pos = self.mapToScene(event.pos())
+            self.temp_connection_line.setLine(QLineF(start_pos, mouse_pos))
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+            
+    def mouseReleaseEvent(self, event):
+        if self.dragging_connection and self.temp_connection_line:
+            # Find if we're over another unit
+            end_pos = self.mapToScene(event.pos())
+            items = self.scene().items(end_pos)
+            
+            # Remove temp line
+            self.scene().removeItem(self.temp_connection_line)
+            self.temp_connection_line = None
+            
+            # Find if mouse was released over another unit
+            for item in items:
+                if isinstance(item, Unit) and item != self:
+                    self.connect_to(item)
+                    break
+                    
+            self.dragging_connection = False
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+            
     def connect_to(self, other_unit):
         if other_unit not in self.connections:
             self.connections.append(other_unit)
             other_unit.connections.append(self)  # Optional: make it bidirectional
+            self.update()
+            other_unit.update()
+            print(f"Connected units")
 
 
 
@@ -74,12 +125,12 @@ class MainWindow(QMainWindow):
         self.add_items()
         
         # Setup window
-        self.setWindowTitle("QGraphicsScene Example")
+        self.setWindowTitle("Unit Connection Example")
         self.resize(850, 650)
         
     def add_items(self):
         # Dodanie jednostki na mapę
-        unit1 = Unit(150, 300,size=50,color=QColor(50,200,50))
+        unit1 = Unit(150, 300, size=50, color=QColor(50, 200, 50))
         self.scene.addItem(unit1)
 
         unit2 = Unit(150, 150, size=50, color=QColor(200, 50, 50))

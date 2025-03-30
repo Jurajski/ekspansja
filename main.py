@@ -1,15 +1,12 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow, QGraphicsScene, QGraphicsView, QGraphicsItem
-from PyQt5.QtCore import Qt, QRectF, QPointF, QLineF,QTimer
-from PyQt5.QtGui import QBrush, QPen, QColor, QPainter, QFont
-import sys
+from PyQt5.QtWidgets import QApplication, QMainWindow, QGraphicsScene, QGraphicsView, QGraphicsItem, QGraphicsLineItem, QPushButton, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QAction, QMessageBox, QSizePolicy, QProgressBar
+from PyQt5.QtCore import Qt, QRectF, QPointF, QLineF, QTimer
+from PyQt5.QtGui import QBrush, QPen, QColor, QPainter, QFont, QPixmap, QIcon
 import os
+import sys
 from PyQt5 import QtCore
-from PyQt5.QtWidgets import QGraphicsItem, QGraphicsLineItem
-from PyQt5.QtGui import QBrush, QPen, QColor
-from PyQt5.QtCore import QRectF, Qt
+import resources_rc
 
 class ConnectionLine(QGraphicsLineItem):
-    """Temporary line displayed during connection dragging"""
     def __init__(self, start_pos):
         super().__init__()
         self.setLine(QLineF(start_pos, start_pos))
@@ -20,33 +17,72 @@ class Unit(QGraphicsItem):
         super().__init__()
         
         self.size = size
-        self.owner = owner  # "player", "pc", or "neutral"
+        self.owner = owner
         
-        # Set color based on owner
         if owner == "player":
-            self.color = QColor(50, 200, 50)  # Green
+            self.pixmap = QPixmap(":/images/grafika/green.bmp")
+            self.color = QColor(50, 200, 50)
         elif owner == "pc":
-            self.color = QColor(200, 50, 50)  # Red
-        else:  # neutral
-            self.color = QColor(150, 150, 150)  # Gray
-            
-        self.connections = []  # List of other Unit instances
-        self.dragging_connection = False
-        self.temp_connection_line = None
+            self.pixmap = QPixmap(":/images/grafika/red.bmp")
+            self.color = QColor(200, 50, 50)
+        else:
+            self.pixmap = QPixmap(":/images/grafika/grey.bmp")
+            self.color = QColor(150, 150, 150)
         
-        # Initialize value based on owner type
+        if not self.pixmap.isNull():
+            self.pixmap = self.pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            
+        self.connections = []
+        self.dragging_connection = False
+        self.deleting_connection = False
+        self.temp_connection_line = None
+        self.highlight_type = None
+        self.is_highlighted = False
+        
         if owner == "neutral":
-            self.value = 10  # Neutral units start with 10
-            self.player_points = 0  # Points given by player
-            self.pc_points = 0      # Points given by PC
+            self.value = 10
+            self.player_points = 0
+            self.pc_points = 0
         else:
             self.value = 0
 
+        self.main_window = None
         self.setPos(x, y)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
-        
+
+    def disconnect_from(self, other_unit):
+        if other_unit in self.connections:
+            self.connections.remove(other_unit)
+            if self in other_unit.connections:
+                other_unit.connections.remove(self)
+            
+            self.update()
+            other_unit.update()
+            if self.scene():
+                self.scene().update()
+            
+            if self.main_window and self.owner == self.main_window.current_turn:
+                self.main_window.action_performed()
+
     def paint(self, painter, option, widget=None):
-        # Draw lines to connected units
+        if self.is_highlighted:
+            if self.highlight_type == "connect":
+                painter.setPen(QPen(QColor(0, 100, 255), 3))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(-5, -5, self.size + 10, self.size + 10)
+            elif self.highlight_type == "attack":
+                painter.setPen(QPen(QColor(255, 0, 0), 3))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(-5, -5, self.size + 10, self.size + 10)
+            elif self.highlight_type == "transfer":
+                painter.setPen(QPen(QColor(255, 255, 0), 3))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(-5, -5, self.size + 10, self.size + 10)
+            elif self.highlight_type == "ally":
+                painter.setPen(QPen(QColor(0, 255, 0), 3))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(-5, -5, self.size + 10, self.size + 10)
+        
         pen = QPen(Qt.darkGray, 1, Qt.DashLine)
         painter.setPen(pen)
         for other in self.connections:
@@ -54,21 +90,24 @@ class Unit(QGraphicsItem):
             end = other.scenePos() + other.boundingRect().center()
             painter.drawLine(self.mapFromScene(start), self.mapFromScene(end))
 
-        # Then draw the unit itself
-        pen = QPen(Qt.black, 2)
-        brush = QBrush(self.color if not self.isSelected() else QColor(255, 255, 0))
-
-        painter.setPen(pen)
-        painter.setBrush(brush)
-        painter.drawEllipse(0, 0, self.size, self.size)
+        if not self.pixmap.isNull():
+            if self.isSelected():
+                painter.setPen(QPen(Qt.black, 2))
+                painter.setBrush(QBrush(QColor(255, 255, 0)))
+                painter.drawEllipse(0, 0, self.size, self.size)
+                
+            painter.drawPixmap(0, 0, self.pixmap)
+        else:
+            pen = QPen(Qt.black, 2)
+            brush = QBrush(self.color if not self.isSelected() else QColor(255, 255, 0))
+            painter.setPen(pen)
+            painter.setBrush(brush)
+            painter.drawEllipse(0, 0, self.size, self.size)
         
-        # Display the value in the center of the unit
         painter.setPen(QPen(Qt.white))
         painter.setFont(QFont("Arial", self.size // 4))
         
-        # Special display for neutral units
         if self.owner == "neutral":
-            # Show neutral value in brackets
             display_text = f"[{self.value}]"
             if self.player_points > 0:
                 display_text += f"\nP:{self.player_points}"
@@ -81,68 +120,67 @@ class Unit(QGraphicsItem):
                          Qt.AlignCenter, display_text)
     
     def transfer_points(self, from_unit):
-        """Transfer points from a connected unit to this unit"""
-        # If this is a neutral unit receiving points
         if self.owner == "neutral":
             if from_unit.owner == "player":
                 self.player_points += 1
-                # Check for takeover
                 if self.player_points >= 10:
                     self.convert_to("player")
             elif from_unit.owner == "pc":
                 self.pc_points += 1
-            # Check for takeover
                 if self.pc_points >= 10:
                     self.convert_to("pc")
     
-    # If this is a player unit and is attacked by PC unit
         elif self.owner == "player" and from_unit.owner == "pc":
             self.decrease_value()
-        # Check if value reached zero
             if self.value == 0:
                 self.convert_to_neutral()
     
-    # If this is a PC unit and is attacked by player unit
         elif self.owner == "pc" and from_unit.owner == "player":
             self.decrease_value()
-        # Check if value reached zero
             if self.value == 0:
                 self.convert_to_neutral()
             
         self.update()
 
     def convert_to_neutral(self):
-        """Convert unit to neutral when its value reaches zero"""
         self.owner = "neutral"
-        self.color = QColor(150, 150, 150)  # Gray
-        self.value = 10  # Reset to default neutral value
+        self.color = QColor(150, 150, 150)
+        self.pixmap = QPixmap(":/images/grafika/grey.bmp")
+        if not self.pixmap.isNull():
+            self.pixmap = self.pixmap.scaled(self.size, self.size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.value = 10
         self.player_points = 0
         self.pc_points = 0
         self.update()
-        print(f"Unit converted to neutral")
+        
+        if self.main_window:
+            self.main_window.check_game_over()
+
     def convert_to(self, new_owner):
-        """Convert this unit to a new owner (player or pc)"""
         self.owner = new_owner
-    
-    # Update color based on new owner
+
         if new_owner == "player":
-            self.color = QColor(50, 200, 50)  # Green
-            self.value = self.player_points  # Set value to accumulated player points
+            self.color = QColor(50, 200, 50)
+            self.pixmap = QPixmap(":/images/grafika/green.bmp")
+            self.value = self.player_points
         elif new_owner == "pc":
-            self.color = QColor(200, 50, 50)  # Red
-            self.value = self.pc_points  # Set value to accumulated PC points
+            self.color = QColor(200, 50, 50)
+            self.pixmap = QPixmap(":/images/grafika/red.bmp")
+            self.value = self.pc_points
     
-    # Reset the points counters
+        if not self.pixmap.isNull():
+            self.pixmap = self.pixmap.scaled(self.size, self.size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    
         self.player_points = 0
         self.pc_points = 0
-    
+
         self.update()
-        print(f"Unit converted to {new_owner}")    
+        
+        if self.main_window:
+            self.main_window.check_game_over()
         
     def boundingRect(self):
-        # Określa "obszar roboczy" jednostki (dla kolizji, zaznaczenia itd.)
         return QRectF(0, 0, self.size, self.size)
-
     
     def increase_value(self, amount=1):
         self.value += amount
@@ -150,23 +188,78 @@ class Unit(QGraphicsItem):
         
     def decrease_value(self, amount=1):
         self.value -= amount
-        self.value = max(0, self.value)  # Ensure value doesn't go below 0
+        self.value = max(0, self.value)
         self.update()
 
     def mousePressEvent(self, event):
+        if self.main_window and self.owner != "neutral" and self.owner != self.main_window.current_turn:
+            return
+            
         if event.button() == Qt.LeftButton:
-            # Start connection dragging on any left click
-            self.dragging_connection = True
+            self.clear_all_highlights()
+            self.setSelected(True)
+            self.show_possible_moves()
+        
+            if event.modifiers() == Qt.ControlModifier:
+                self.dragging_connection = True
+                start_pos = self.scenePos() + self.boundingRect().center()
+                self.temp_connection_line = ConnectionLine(start_pos)
+                self.scene().addItem(self.temp_connection_line)
+            event.accept()
+        elif event.button() == Qt.RightButton:
+            if self.main_window and self.owner != "neutral" and self.owner != self.main_window.current_turn:
+                return
+                
+            self.deleting_connection = True
+        
+            self.clear_all_highlights()
+            for unit in self.connections:
+                unit.is_highlighted = True
+                unit.highlight_type = "attack"
+                unit.update()
+        
             start_pos = self.scenePos() + self.boundingRect().center()
             self.temp_connection_line = ConnectionLine(start_pos)
+            self.temp_connection_line.setPen(QPen(Qt.red, 2, Qt.DashLine))
             self.scene().addItem(self.temp_connection_line)
+        
             event.accept()
         else:
             super().mousePressEvent(event)
             
+    def clear_all_highlights(self):
+        if self.scene():
+            for item in self.scene().items():
+                if isinstance(item, Unit):
+                    item.is_highlighted = False
+                    item.highlight_type = None
+                    item.update()
+                    
+    def show_possible_moves(self):
+        if not self.scene():
+            return
+            
+        all_units = [item for item in self.scene().items() if isinstance(item, Unit) and item != self]
+        
+        for unit in all_units:
+            if unit not in self.connections:
+                unit.is_highlighted = True
+                unit.highlight_type = "connect"
+            else:
+                if unit.owner == "neutral" and self.owner != "neutral":
+                    unit.is_highlighted = True
+                    unit.highlight_type = "transfer"
+                elif unit.owner != self.owner and unit.owner != "neutral" and self.owner != "neutral":
+                    unit.is_highlighted = True
+                    unit.highlight_type = "attack"
+                elif unit.owner == self.owner:
+                    unit.is_highlighted = True
+                    unit.highlight_type = "ally"
+                    
+            unit.update()        
+            
     def mouseMoveEvent(self, event):
-        if self.dragging_connection and self.temp_connection_line:
-            # Update temp line endpoint to follow mouse
+        if (self.dragging_connection or self.deleting_connection) and self.temp_connection_line:
             start_pos = self.scenePos() + self.boundingRect().center()
             mouse_pos = self.mapToScene(event.pos())
             self.temp_connection_line.setLine(QLineF(start_pos, mouse_pos))
@@ -176,21 +269,37 @@ class Unit(QGraphicsItem):
             
     def mouseReleaseEvent(self, event):
         if self.dragging_connection and self.temp_connection_line:
-            # Find if we're over another unit
             end_pos = self.mapToScene(event.pos())
-            items = self.scene().items(end_pos)
-            
-            # Remove temp line
+            items = self.scene().items()
+        
             self.scene().removeItem(self.temp_connection_line)
             self.temp_connection_line = None
-            
-            # Find if mouse was released over another unit
+        
             for item in items:
                 if isinstance(item, Unit) and item != self:
                     self.connect_to(item)
                     break
-                    
+                
             self.dragging_connection = False
+            event.accept()
+        elif self.deleting_connection:
+            end_pos = self.mapToScene(event.pos())
+            items = self.scene().items()
+        
+            if self.temp_connection_line:
+                self.scene().removeItem(self.temp_connection_line)
+                self.temp_connection_line = None
+        
+            self.clear_all_highlights()
+        
+            disconnected = False
+            for item in items:
+                if isinstance(item, Unit) and item != self and item in self.connections:
+                    self.disconnect_from(item)
+                    disconnected = True
+                    break
+            
+            self.deleting_connection = False
             event.accept()
         else:
             super().mouseReleaseEvent(event)
@@ -198,66 +307,304 @@ class Unit(QGraphicsItem):
     def connect_to(self, other_unit):
         if other_unit not in self.connections:
             self.connections.append(other_unit)
-            other_unit.connections.append(self)  # Optional: make it bidirectional
+            other_unit.connections.append(self)
             self.update()
             other_unit.update()
-            print(f"Connected units")
-
-
+            
+            if self.main_window and self.owner == self.main_window.current_turn:
+                self.main_window.action_performed()
 
 plugin_path = os.path.join(os.path.dirname(QtCore.__file__), "plugins", "platforms")
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = plugin_path
 
+class LevelManager:
+    def __init__(self):
+        self.levels = []
+        self.current_level_index = 0
+
+    def add_level(self, level_config):
+        self.levels.append(level_config)
+
+    def get_current_level(self):
+        if self.levels and 0 <= self.current_level_index < len(self.levels):
+            return self.levels[self.current_level_index]
+        return None
+
+    def next_level(self):
+        if self.current_level_index < len(self.levels) - 1:
+            self.current_level_index += 1
+            return True
+        return False
+
+    def reset(self):
+        self.current_level_index = 0
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.setContextMenuPolicy(Qt.NoContextMenu)
         
-        # Create a scene
+        self.level_manager = LevelManager()
+        self.setup_levels()
+        
+        self.current_turn = "player"
+        self.turn_duration = 5000
+        self.turn_timer = QTimer(self)
+        self.turn_timer.timeout.connect(self.switch_turn)
+        self.turn_timer.setSingleShot(True)
+        
+        self.timer_tick = 100
+        self.time_remaining = self.turn_duration
+        self.progress_timer = QTimer(self)
+        self.progress_timer.timeout.connect(self.update_progress)
+        
+        self.setWindowTitle("Expansion War")
+        self.resize(850, 650)
+        
+        self.create_menu_bar()
+        self.create_level_toolbar()
+        self.create_turn_indicator()
+        
         self.scene = QGraphicsScene()
-        self.scene.setSceneRect(0, 0, 800, 600)  # Set scene dimensions
-        
-        # Create a view to display the scene
+        self.scene.setSceneRect(0, 0, 800, 600)
         self.view = QGraphicsView(self.scene)
         self.view.setRenderHint(QPainter.Antialiasing)
         
-        # Set the view as the central widget
         self.setCentralWidget(self.view)
         
-        # Add items to the scene
-        self.add_items()
+        self.statusBar().showMessage(f"Level: {self.level_manager.current_level_index + 1}")
         
-        # Setup window
-        self.setWindowTitle("Unit Connection Example")
-        self.resize(850, 650)
-        
-        # Install event filter to handle key presses
         self.view.installEventFilter(self)
-        
-        # Create timer to increase unit values every second
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.increment_all_units)
-        self.timer.start(1000)  # 1000 ms = 1 second
+        self.timer.start(1000)
+        self.scene.selectionChanged.connect(self.handle_selection_changed)
         
-    def increment_all_units(self):
-    # First increment all non-neutral units
-        for item in self.scene.items():
-            if isinstance(item, Unit) and item.owner != "neutral":
-                item.increase_value()
-    
-    # Now check for connections and transfer points
+        self.load_level()
+        self.start_turn()
+        
+        self.game_over = False
+        
+    def create_menu_bar(self):
+        menubar = self.menuBar()
+        
+        game_menu = menubar.addMenu('&Game')
+        
+        next_action = QAction('&Next Level', self)
+        next_action.setShortcut('N')
+        next_action.setStatusTip('Go to next level')
+        next_action.triggered.connect(self.next_level)
+        game_menu.addAction(next_action)
+        
+        reset_action = QAction('&Reset Level', self)
+        reset_action.setShortcut('R')
+        reset_action.setStatusTip('Reset current level')
+        reset_action.triggered.connect(self.reset_level)
+        game_menu.addAction(reset_action)
+        
+        game_menu.addSeparator()
+        
+        exit_action = QAction('&Exit', self)
+        exit_action.setShortcut('Ctrl+Q')
+        exit_action.setStatusTip('Exit application')
+        exit_action.triggered.connect(self.close)
+        game_menu.addAction(exit_action)
+        
+    def create_level_toolbar(self):
+        toolbar = self.addToolBar("Levels")
+        toolbar.setMovable(False)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+        toolbar.setVisible(True)
+        toolbar.setStyleSheet("QToolBar { background-color: #f0f0f0; border: 10px solid #c0c0c0; spacing: 10px; }")
+        
+        level_label = QLabel("Select Level:")
+        level_label.setStyleSheet("font-weight: bold; margin-right: 10px; margin-left: 5px;")
+        toolbar.addWidget(level_label)
+        
+        self.level_buttons = []
+        for i in range(len(self.level_manager.levels)):
+            level_button = QPushButton(f"Level {i+1}")
+            level_button.setMinimumWidth(80)
+            level_button.setStyleSheet("QPushButton { padding: 5px 10px; }")
+            level_button.clicked.connect(lambda checked, level=i: self.select_level(level))
+            toolbar.addWidget(level_button)
+            self.level_buttons.append(level_button)
+        
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
+        
+        reset_button = QPushButton("Reset Level")
+        reset_button.setStyleSheet("QPushButton { background-color: #ffcc00; color: black; font-weight: bold; padding: 5px 15px; margin-right: 10px; }")
+        reset_button.clicked.connect(self.reset_level)
+        toolbar.addWidget(reset_button)
+        
+    def create_turn_indicator(self):
+        turn_toolbar = self.addToolBar("Turn System")
+        turn_toolbar.setMovable(False)
+        turn_toolbar.setStyleSheet("QToolBar { background-color: #f0f0f0; border: 1px solid #c0c0c0; spacing: 10px; }")
+        
+        self.turn_label = QLabel("Current Turn: GREEN PLAYER")
+        self.turn_label.setStyleSheet("font-weight: bold; color: green; font-size: 14px; margin: 0px 10px;")
+        turn_toolbar.addWidget(self.turn_label)
+        
+        self.turn_progress = QProgressBar()
+        self.turn_progress.setRange(0, self.turn_duration)
+        self.turn_progress.setValue(self.turn_duration)
+        self.turn_progress.setTextVisible(False)
+        self.turn_progress.setMinimumWidth(200)
+        self.turn_progress.setMaximumWidth(300)
+        self.turn_progress.setStyleSheet("QProgressBar { border: 1px solid gray; border-radius: 3px; background: white; } "
+                                         "QProgressBar::chunk { background-color: green; }")
+        turn_toolbar.addWidget(self.turn_progress)
+        
+        self.time_label = QLabel("5.0s")
+        self.time_label.setStyleSheet("font-weight: bold; margin: 0px 10px;")
+        turn_toolbar.addWidget(self.time_label)
+        
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        turn_toolbar.addWidget(spacer)
+        
+        self.skip_button = QPushButton("Skip Turn")
+        self.skip_button.clicked.connect(self.switch_turn)
+        self.skip_button.setStyleSheet("QPushButton { background-color: #ddd; padding: 5px 10px; margin-right: 10px; }")
+        turn_toolbar.addWidget(self.skip_button)
+
+    def select_level(self, level_index):
+        if 0 <= level_index < len(self.level_manager.levels):
+            self.level_manager.current_level_index = level_index
+            self.load_level()
+            self.update_button_styles()
+        
+    def update_button_styles(self):
+        for i, button in enumerate(self.level_buttons):
+            if i == self.level_manager.current_level_index:
+                button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 5px 10px; }")
+            else:
+                button.setStyleSheet("QPushButton { padding: 5px 10px; }")
+
+    def setup_levels(self):
+        self.level_manager.add_level([
+            {"x": 150, "y": 300, "size": 50, "owner": "player"},
+            {"x": 150, "y": 150, "size": 50, "owner": "pc"},
+            {"x": 300, "y": 150, "size": 50, "owner": "pc"},
+            {"x": 300, "y": 300, "size": 50, "owner": "neutral"}
+        ])
+        
+        self.level_manager.add_level([
+            {"x": 100, "y": 100, "size": 50, "owner": "player"},
+            {"x": 200, "y": 100, "size": 50, "owner": "neutral"},
+            {"x": 300, "y": 100, "size": 50, "owner": "pc"},
+            {"x": 400, "y": 100, "size": 50, "owner": "neutral"},
+            {"x": 250, "y": 300, "size": 50, "owner": "neutral"}
+        ])
+        
+        self.level_manager.add_level([
+            {"x": 100, "y": 300, "size": 50, "owner": "player"},
+            {"x": 200, "y": 200, "size": 50, "owner": "neutral"},
+            {"x": 300, "y": 300, "size": 50, "owner": "pc"},
+            {"x": 150, "y": 400, "size": 50, "owner": "neutral"},
+            {"x": 350, "y": 400, "size": 50, "owner": "neutral"},
+            {"x": 400, "y": 200, "size": 50, "owner": "pc"}
+        ])
+
+    def load_level(self):
+        current_level = self.level_manager.current_level_index + 1
+        
+        self.statusBar().showMessage(f"Level: {current_level}")
+        self.setWindowTitle(f"Expansion War - Level {current_level}")
+        
+        self.update_button_styles()
+        
+        self.clear_all_connections_and_highlights()
+        
+        self.scene.clear()
+        
+        level_config = self.level_manager.get_current_level()
+        if level_config:
+            for unit_config in level_config:
+                unit = Unit(**unit_config)
+                unit.main_window = self
+                self.scene.addItem(unit)
+        
+        self.current_turn = "player"
+        self.start_turn()
+        
+        self.game_over = False
+
+    def clear_all_connections_and_highlights(self):
         for item in self.scene.items():
             if isinstance(item, Unit):
-            # Process connections for each unit
+                item.connections = []
+                
+                item.is_highlighted = False
+                item.highlight_type = None
+                
+                if item.temp_connection_line and item.temp_connection_line in self.scene.items():
+                    self.scene.removeItem(item.temp_connection_line)
+                    item.temp_connection_line = None
+                
+                item.dragging_connection = False
+                item.deleting_connection = False
+        
+        self.scene.update()
+
+    def next_level(self):
+        if self.level_manager.next_level():
+            self.load_level()
+        else:
+            QMessageBox.information(self, "Game Complete", "You have completed all levels!")
+
+    def reset_level(self):
+        self.load_level()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_N:
+            self.next_level()
+        elif event.key() == Qt.Key_R:
+            self.reset_level()
+        else:
+            super().keyPressEvent(event)
+
+    def handle_selection_changed(self):
+        selected_items = self.scene.selectedItems()
+        
+        if not selected_items:
+            for item in self.scene.items():
+                if isinstance(item, Unit):
+                    item.is_highlighted = False
+                    item.highlight_type = None
+                    item.update()
+                    
+    def increment_all_units(self):
+        units_with_same_owner_connections = set()
+    
+        for item in self.scene.items():
+            if isinstance(item, Unit) and item.owner != "neutral":
                 for connected_unit in item.connections:
-                # Case 1: Transfer points from player/PC to neutral units
+                    if connected_unit.owner == item.owner:
+                        units_with_same_owner_connections.add(item)
+                        units_with_same_owner_connections.add(connected_unit)
+    
+        for item in self.scene.items():
+            if isinstance(item, Unit) and item.owner != "neutral":
+                if item in units_with_same_owner_connections:
+                    item.increase_value(2)
+                else:
+                    item.increase_value(1)
+    
+        for item in self.scene.items():
+            if isinstance(item, Unit):
+                for connected_unit in item.connections:
                     if item.owner != "neutral" and connected_unit.owner == "neutral":
                         connected_unit.transfer_points(item)
+                        item.decrease_value()
                 
-                # Case 2: Player units attack PC units
                     elif item.owner == "player" and connected_unit.owner == "pc":
                         connected_unit.transfer_points(item)
                 
-                # Case 3: PC units attack player units
                     elif item.owner == "pc" and connected_unit.owner == "player":
                         connected_unit.transfer_points(item)     
    
@@ -276,23 +623,106 @@ class MainWindow(QMainWindow):
                             item.decrease_value()
                     return True
         return super().eventFilter(source, event)
+
+    def start_turn(self):
+        if self.current_turn == "player":
+            self.turn_label.setText("Current Turn: GREEN PLAYER")
+            self.turn_label.setStyleSheet("font-weight: bold; color: green; font-size: 14px; margin: 0px 10px;")
+            self.turn_progress.setStyleSheet("QProgressBar { border: 1px solid gray; border-radius: 3px; background: white; } "
+                                           "QProgressBar::chunk { background-color: green; }")
+        else:
+            self.turn_label.setText("Current Turn: RED PLAYER")
+            self.turn_label.setStyleSheet("font-weight: bold; color: red; font-size: 14px; margin: 0px 10px;")
+            self.turn_progress.setStyleSheet("QProgressBar { border: 1px solid gray; border-radius: 3px; background: white; } "
+                                           "QProgressBar::chunk { background-color: red; }")
         
-    def add_items(self):
-    # Player unit (green)
-        unit1 = Unit(150, 300, size=50, owner="player")
-        self.scene.addItem(unit1)
+        self.time_remaining = self.turn_duration
+        self.turn_progress.setValue(self.time_remaining)
+        self.time_label.setText(f"{self.time_remaining/1000:.1f}s")
+        
+        self.turn_timer.start(self.turn_duration)
+        self.progress_timer.start(self.timer_tick)
 
-    # Computer units (red)
-        unit2 = Unit(150, 150, size=50, owner="pc")
-        self.scene.addItem(unit2)
+    def update_progress(self):
+        self.time_remaining -= self.timer_tick
+        if self.time_remaining < 0:
+            self.time_remaining = 0
+        
+        self.turn_progress.setValue(self.time_remaining)
+        self.time_label.setText(f"{self.time_remaining/1000:.1f}s")
+
+    def switch_turn(self):
+        self.turn_timer.stop()
+        self.progress_timer.stop()
+        
+        self.current_turn = "pc" if self.current_turn == "player" else "player"
+        
+        self.start_turn()
+        
+        self.check_game_over()
+
+    def action_performed(self):
+        if not self.game_over:
+            self.switch_turn()
+            
+        self.check_game_over()
     
-        unit3 = Unit(300, 150, size=50, owner="pc")
-        self.scene.addItem(unit3)
-
-        unit4 = Unit(300, 300, size=50, owner="neutral")
-        self.scene.addItem(unit4)
-
-
+    def check_game_over(self):
+        if self.game_over:
+            return
+            
+        green_units = 0
+        red_units = 0
+        
+        for item in self.scene.items():
+            if isinstance(item, Unit):
+                if item.owner == "player":
+                    green_units += 1
+                elif item.owner == "pc":
+                    red_units += 1
+        
+        winner = None
+        if green_units == 0 and red_units > 0:
+            winner = "red"
+        elif red_units == 0 and green_units > 0:
+            winner = "green"
+            
+        if winner:
+            self.game_over = True
+            self.turn_timer.stop()
+            self.progress_timer.stop()
+            self.timer.stop()
+            self.show_game_over_dialog(winner)
+    
+    def show_game_over_dialog(self, winner):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Game Over!")
+        
+        if winner == "green":
+            dialog.setIcon(QMessageBox.Information)
+            dialog.setWindowIcon(QIcon(QPixmap(":/images/grafika/green.bmp")))
+            dialog.setText("<h2>Green Player Wins!</h2>")
+            dialog.setInformativeText("Green player has conquered the map!")
+        else:
+            dialog.setIcon(QMessageBox.Information)
+            dialog.setWindowIcon(QIcon(QPixmap(":/images/grafika/red.bmp")))
+            dialog.setText("<h2>Red Player Wins!</h2>")
+            dialog.setInformativeText("Red player has conquered the map!")
+        
+        restart_button = dialog.addButton("Restart Level", QMessageBox.AcceptRole)
+        next_level_button = dialog.addButton("Next Level", QMessageBox.ActionRole)
+        dialog.addButton("Close", QMessageBox.RejectRole)
+        
+        dialog.exec_()
+        
+        clicked_button = dialog.clickedButton()
+        if clicked_button == restart_button:
+            self.game_over = False
+            self.reset_level()
+        elif clicked_button == next_level_button:
+            self.game_over = False
+            self.next_level()
+        
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()

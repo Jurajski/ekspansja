@@ -1,0 +1,10 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/images">
+        
+        <file>grafika/green.bmp</file>
+        <file>grafika/red.bmp</file>
+        <file>grafika/grey.bmp</file>
+        
+    </qresource>
+</RCC>

@@ -198,13 +198,13 @@ class Unit(QGraphicsItem):
         if event.button() == Qt.LeftButton:
             self.clear_all_highlights()
             self.setSelected(True)
-            self.show_possible_moves()
-        
+            
             if event.modifiers() == Qt.ControlModifier:
                 self.dragging_connection = True
                 start_pos = self.scenePos() + self.boundingRect().center()
                 self.temp_connection_line = ConnectionLine(start_pos)
                 self.scene().addItem(self.temp_connection_line)
+                self.show_possible_moves()  # Only show highlights when actively connecting
             event.accept()
         elif event.button() == Qt.RightButton:
             if self.main_window and self.owner != "neutral" and self.owner != self.main_window.current_turn:
@@ -270,39 +270,56 @@ class Unit(QGraphicsItem):
     def mouseReleaseEvent(self, event):
         if self.dragging_connection and self.temp_connection_line:
             end_pos = self.mapToScene(event.pos())
-            items = self.scene().items()
-        
+            
+            # Clean up connection line
             self.scene().removeItem(self.temp_connection_line)
             self.temp_connection_line = None
-        
-            for item in items:
+            
+            # Find item under cursor
+            item_under_cursor = None
+            for item in self.scene().items(end_pos):
                 if isinstance(item, Unit) and item != self:
-                    self.connect_to(item)
+                    item_under_cursor = item
                     break
-                
+            
+            # Connect only if we found a unit under the cursor
+            if item_under_cursor:
+                self.connect_to(item_under_cursor)
+            
+            # Clear all highlights after connection is made
+            self.clear_all_highlights()
             self.dragging_connection = False
             event.accept()
         elif self.deleting_connection:
             end_pos = self.mapToScene(event.pos())
-            items = self.scene().items()
-        
+            
+            # Clean up connection line
             if self.temp_connection_line:
                 self.scene().removeItem(self.temp_connection_line)
                 self.temp_connection_line = None
-        
-            self.clear_all_highlights()
-        
-            disconnected = False
-            for item in items:
+            
+            # Find item under cursor
+            item_under_cursor = None
+            for item in self.scene().items(end_pos):
                 if isinstance(item, Unit) and item != self and item in self.connections:
-                    self.disconnect_from(item)
-                    disconnected = True
+                    item_under_cursor = item
                     break
             
+            # Disconnect only if we found a connected unit under the cursor
+            if item_under_cursor:
+                self.disconnect_from(item_under_cursor)
+            
+            # Always clear highlights when releasing
+            self.clear_all_highlights()
             self.deleting_connection = False
             event.accept()
         else:
             super().mouseReleaseEvent(event)
+    
+    def handle_selection_changed(self):
+        """Handle selection change to clear highlights"""
+        if not self.dragging_connection and not self.deleting_connection:
+            self.clear_all_highlights()
             
     def connect_to(self, other_unit):
         if other_unit not in self.connections:
@@ -572,6 +589,7 @@ class MainWindow(QMainWindow):
         selected_items = self.scene.selectedItems()
         
         if not selected_items:
+            # Only clear highlights if nothing is selected
             for item in self.scene.items():
                 if isinstance(item, Unit):
                     item.is_highlighted = False

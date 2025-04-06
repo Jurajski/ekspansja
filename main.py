@@ -1,10 +1,15 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow, QGraphicsScene, QGraphicsView, QGraphicsItem, QGraphicsLineItem, QPushButton, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QAction, QMessageBox, QSizePolicy, QProgressBar
+from PyQt5.QtWidgets import QApplication, QMainWindow, QGraphicsScene, QGraphicsView, QGraphicsItem, QGraphicsLineItem, QPushButton, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QAction, QMessageBox, QSizePolicy, QProgressBar, QFileDialog
 from PyQt5.QtCore import Qt, QRectF, QPointF, QLineF, QTimer
 from PyQt5.QtGui import QBrush, QPen, QColor, QPainter, QFont, QPixmap, QIcon
 import os
 import sys
+import json
+import xml.dom.minidom
 from PyQt5 import QtCore
 import resources_rc
+from config_dialog import ConfigDialog
+from game_history import GameHistoryRecorder
+from file_viewer import FileViewerDialog
 
 class ConnectionLine(QGraphicsLineItem):
     def __init__(self, start_pos):
@@ -49,6 +54,9 @@ class Unit(QGraphicsItem):
         self.main_window = None
         self.setPos(x, y)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
+        
+        # Add unique ID for each unit (for history tracking)
+        self.unit_id = id(self)
 
     def disconnect_from(self, other_unit):
         if other_unit in self.connections:
@@ -63,6 +71,10 @@ class Unit(QGraphicsItem):
             
             if self.main_window and self.owner == self.main_window.current_turn:
                 self.main_window.action_performed()
+                
+                # Record the disconnection in history
+                if hasattr(self.main_window, 'history_recorder'):
+                    self.main_window.history_recorder.record_disconnect(self.unit_id, other_unit.unit_id)
 
     def paint(self, painter, option, widget=None):
         if self.is_highlighted:
@@ -157,6 +169,7 @@ class Unit(QGraphicsItem):
             self.main_window.check_game_over()
 
     def convert_to(self, new_owner):
+        old_owner = self.owner
         self.owner = new_owner
 
         if new_owner == "player":
@@ -176,6 +189,15 @@ class Unit(QGraphicsItem):
 
         self.update()
         
+        # Record ownership change
+        if self.main_window and hasattr(self.main_window, 'history_recorder'):
+            self.main_window.history_recorder.record_unit_change(self.unit_id, {
+                "owner_change": True,
+                "old_owner": old_owner,
+                "new_owner": new_owner,
+                "new_value": self.value
+            })
+        
         if self.main_window:
             self.main_window.check_game_over()
         
@@ -183,13 +205,31 @@ class Unit(QGraphicsItem):
         return QRectF(0, 0, self.size, self.size)
     
     def increase_value(self, amount=1):
+        old_value = self.value
         self.value += amount
         self.update()
         
+        # Record the value change
+        if self.main_window and hasattr(self.main_window, 'history_recorder'):
+            self.main_window.history_recorder.record_unit_change(self.unit_id, {
+                "value_change": amount,
+                "old_value": old_value,
+                "new_value": self.value
+            })
+        
     def decrease_value(self, amount=1):
+        old_value = self.value
         self.value -= amount
         self.value = max(0, self.value)
         self.update()
+        
+        # Record the value change
+        if self.main_window and hasattr(self.main_window, 'history_recorder'):
+            self.main_window.history_recorder.record_unit_change(self.unit_id, {
+                "value_change": -amount,
+                "old_value": old_value,
+                "new_value": self.value
+            })
 
     def mousePressEvent(self, event):
         if self.main_window and self.owner != "neutral" and self.owner != self.main_window.current_turn:
@@ -330,6 +370,10 @@ class Unit(QGraphicsItem):
             
             if self.main_window and self.owner == self.main_window.current_turn:
                 self.main_window.action_performed()
+                
+                # Record the connection in history
+                if hasattr(self.main_window, 'history_recorder'):
+                    self.main_window.history_recorder.record_connection(self.unit_id, other_unit.unit_id)
 
 plugin_path = os.path.join(os.path.dirname(QtCore.__file__), "plugins", "platforms")
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = plugin_path
@@ -376,6 +420,16 @@ class MainWindow(QMainWindow):
         self.progress_timer = QTimer(self)
         self.progress_timer.timeout.connect(self.update_progress)
         
+        # Initialize game history recorder
+        self.history_recorder = GameHistoryRecorder()
+        self.history_recorder.playback_finished.connect(self.on_playback_finished)
+        self.is_playback_mode = False
+        
+        # Game configuration
+        self.game_mode = "Single Player"  # Default mode
+        self.network_ip = "127.0.0.1"
+        self.network_port = 5000
+        
         self.setWindowTitle("Expansion War")
         self.resize(850, 650)
         
@@ -403,10 +457,19 @@ class MainWindow(QMainWindow):
         
         self.game_over = False
         
+        # Unit ID to object mapping (for history playback)
+        self.unit_map = {}
+        
     def create_menu_bar(self):
         menubar = self.menuBar()
         
         game_menu = menubar.addMenu('&Game')
+        
+        config_action = QAction('&Configuration', self)
+        config_action.setShortcut('C')
+        config_action.setStatusTip('Open configuration dialog')
+        config_action.triggered.connect(self.show_config_dialog)
+        game_menu.addAction(config_action)
         
         next_action = QAction('&Next Level', self)
         next_action.setShortcut('N')
@@ -428,6 +491,46 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         game_menu.addAction(exit_action)
         
+        # Add file menu
+        file_menu = menubar.addMenu('&File')
+        
+        load_json_action = QAction('Load &JSON File', self)
+        load_json_action.setStatusTip('Load and view JSON file')
+        load_json_action.triggered.connect(self.load_json_file)
+        file_menu.addAction(load_json_action)
+        
+        load_xml_action = QAction('Load &XML File', self)
+        load_xml_action.setStatusTip('Load and view XML file')
+        load_xml_action.triggered.connect(self.load_xml_file)
+        file_menu.addAction(load_xml_action)
+    
+    def load_json_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open JSON File", "", "JSON Files (*.json)")
+        if file_path:
+            try:
+                with open(file_path, 'r') as file:
+                    data = json.load(file)
+                    formatted_json = json.dumps(data, indent=4)
+                    self.show_file_content(f"JSON Viewer - {os.path.basename(file_path)}", formatted_json)
+                    self.statusBar().showMessage(f"Loaded JSON file: {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load JSON file: {str(e)}")
+
+    def load_xml_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open XML File", "", "XML Files (*.xml)")
+        if file_path:
+            try:
+                dom = xml.dom.minidom.parse(file_path)
+                pretty_xml = dom.toprettyxml(indent="  ")
+                self.show_file_content(f"XML Viewer - {os.path.basename(file_path)}", pretty_xml)
+                self.statusBar().showMessage(f"Loaded XML file: {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load XML file: {str(e)}")
+
+    def show_file_content(self, title, content):
+        dialog = FileViewerDialog(self, title, content)
+        dialog.exec_()
+    
     def create_level_toolbar(self):
         toolbar = self.addToolBar("Levels")
         toolbar.setMovable(False)
@@ -538,6 +641,7 @@ class MainWindow(QMainWindow):
         self.clear_all_connections_and_highlights()
         
         self.scene.clear()
+        self.unit_map = {}  # Clear unit mapping
         
         level_config = self.level_manager.get_current_level()
         if level_config:
@@ -545,11 +649,16 @@ class MainWindow(QMainWindow):
                 unit = Unit(**unit_config)
                 unit.main_window = self
                 self.scene.addItem(unit)
+                self.unit_map[unit.unit_id] = unit
         
         self.current_turn = "player"
         self.start_turn()
         
         self.game_over = False
+        
+        # Clear history when loading a new level
+        if hasattr(self, 'history_recorder'):
+            self.history_recorder.clear_history()
 
     def clear_all_connections_and_highlights(self):
         for item in self.scene.items():
@@ -660,6 +769,10 @@ class MainWindow(QMainWindow):
         
         self.turn_timer.start(self.turn_duration)
         self.progress_timer.start(self.timer_tick)
+        
+        # Record turn switch in history
+        if hasattr(self, 'history_recorder') and not self.is_playback_mode:
+            self.history_recorder.record_turn_switch(self.current_turn)
 
     def update_progress(self):
         self.time_remaining -= self.timer_tick
@@ -678,12 +791,170 @@ class MainWindow(QMainWindow):
         self.start_turn()
         
         self.check_game_over()
+    
+    def load_game_history(self, history):
+        """Load game history for playback"""
+        try:
+            # Convert all ID fields to integers if they're strings
+            for move in history:
+                for key in ["from_id", "to_id", "unit_id"]:
+                    if key in move and not isinstance(move[key], (int, float)):
+                        try:
+                            move[key] = int(float(move[key]))
+                        except (ValueError, TypeError):
+                            pass
+                            
+            self.history_recorder.load_history(history)
+            self.statusBar().showMessage(f"Loaded {len(history)} moves. Ready for playback.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load game history: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
-    def action_performed(self):
-        if not self.game_over:
-            self.switch_turn()
+    def start_playback(self, speed=1.0):
+        """Start playback of loaded history"""
+        if not self.history_recorder.history:
+            QMessageBox.warning(self, "No History", "No game history available for playback.")
+            return
             
-        self.check_game_over()
+        self.is_playback_mode = True
+        # Stop all game timers
+        self.turn_timer.stop()
+        self.progress_timer.stop()
+        self.timer.stop()
+        
+        QMessageBox.information(self, "Playback Starting", 
+                          f"Starting playback of {len(self.history_recorder.history)} moves at {speed}x speed")
+        self.history_recorder.start_playback(self, speed)
+
+    def execute_connection(self, from_id, to_id):
+        """Execute a connection between units (for playback)"""
+        from_unit = self.find_unit_by_id(from_id)
+        to_unit = self.find_unit_by_id(to_id)
+        
+        if from_unit and to_unit:
+            # Temporarily disable recording
+            old_recording = self.history_recorder.is_recording
+            self.history_recorder.is_recording = False
+            
+            # Check if already connected
+            if to_unit in from_unit.connections:
+                self.history_recorder.is_recording = old_recording
+                return True
+                
+            from_unit.connect_to(to_unit)
+            
+            # Restore recording state
+            self.history_recorder.is_recording = old_recording
+            return True
+        return False
+    
+    def execute_disconnection(self, from_id, to_id):
+        """Execute a disconnection between units (for playback)"""
+        from_unit = self.find_unit_by_id(from_id)
+        to_unit = self.find_unit_by_id(to_id)
+        
+        if from_unit and to_unit:
+            # Temporarily disable recording
+            old_recording = self.history_recorder.is_recording
+            self.history_recorder.is_recording = False
+            
+            # Check if actually connected
+            if to_unit not in from_unit.connections:
+                self.history_recorder.is_recording = old_recording
+                return True
+                
+            from_unit.disconnect_from(to_unit)
+            
+            # Restore recording state
+            self.history_recorder.is_recording = old_recording
+            return True
+        return False
+    
+    def update_unit(self, unit_id, changes):
+        """Update a unit's properties (for playback)"""
+        unit = self.find_unit_by_id(unit_id)
+        if not unit:
+            return False
+            
+        # Temporarily disable recording
+        old_recording = self.history_recorder.is_recording
+        self.history_recorder.is_recording = False
+        
+        success = False
+        if "value_change" in changes:
+            value_change = float(changes["value_change"]) if isinstance(changes["value_change"], str) else changes["value_change"]
+            if value_change > 0:
+                unit.increase_value(abs(value_change))
+                success = True
+            else:
+                unit.decrease_value(abs(value_change))
+                success = True
+        
+        if "owner_change" in changes:
+            unit.owner = str(changes["new_owner"])
+            if changes["new_owner"] == "player":
+                unit.color = QColor(50, 200, 50)
+                unit.pixmap = QPixmap(":/images/grafika/green.bmp")
+            elif changes["new_owner"] == "pc":
+                unit.color = QColor(200, 50, 50)
+                unit.pixmap = QPixmap(":/images/grafika/red.bmp")
+            else:
+                unit.color = QColor(150, 150, 150)
+                unit.pixmap = QPixmap(":/images/grafika/grey.bmp")
+                
+            if not unit.pixmap.isNull():
+                unit.pixmap = unit.pixmap.scaled(unit.size, unit.size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                
+            new_value = changes.get("new_value")
+            if new_value is not None:
+                unit.value = float(new_value) if isinstance(new_value, str) else new_value
+            unit.update()
+            success = True
+        
+        # Restore recording state
+        self.history_recorder.is_recording = old_recording
+        return success
+    
+    def find_unit_by_id(self, unit_id):
+        """Find a unit by its ID"""
+        # Handle different types of IDs
+        try:
+            unit_id = int(unit_id)
+        except (ValueError, TypeError):
+            pass
+            
+        # First check our unit map
+        if unit_id in self.unit_map:
+            return self.unit_map[unit_id]
+        
+        # If not found, try to find by iterating (and update map)
+        for item in self.scene.items():
+            if isinstance(item, Unit):
+                if hasattr(item, 'unit_id') and item.unit_id == unit_id:
+                    self.unit_map[unit_id] = item
+                    return item
+        
+        self.statusBar().showMessage(f"Warning: Could not find unit with ID {unit_id}")
+        return None
+        
+    @property
+    def game_history(self):
+        """Get the current game history"""
+        if hasattr(self, 'history_recorder'):
+            return self.history_recorder.get_history()
+        return []
+
+    def show_config_dialog(self):
+        """Show the game configuration dialog"""
+        dialog = ConfigDialog(self)
+        if dialog.exec_():
+            config = dialog.get_config()
+            self.game_mode = config["game_mode"]
+            self.network_ip = config["ip_address"]
+            self.network_port = config["port"]
+            
+            self.statusBar().showMessage(f"Game Mode: {self.game_mode}")
     
     def check_game_over(self):
         if self.game_over:
@@ -740,6 +1011,42 @@ class MainWindow(QMainWindow):
         elif clicked_button == next_level_button:
             self.game_over = False
             self.next_level()
+        
+    def action_performed(self):
+        """Called when a player performs an action (connect/disconnect)"""
+        if not self.game_over:
+            self.switch_turn()
+            
+        self.check_game_over()
+        
+    def on_playback_finished(self):
+        """Called when playback is complete"""
+        self.is_playback_mode = False
+        # Restart game timers
+        self.timer.start(1000)
+        self.start_turn()
+        QMessageBox.information(self, "Playback Complete", "Game history playback has finished.")
+        
+    def prepare_for_playback(self):
+        """Prepare the game state for playback"""
+        # Map units by position for more reliable mapping during playback
+        self.position_unit_map = {}
+        for item in self.scene.items():
+            if isinstance(item, Unit):
+                # Use position as a key (rounded to nearest 10px for stability)
+                pos_key = (int(item.pos().x() // 10) * 10, int(item.pos().y() // 10) * 10)
+                self.position_unit_map[pos_key] = item
+                
+        # Also map by index for levels that use standard configurations
+        self.index_unit_map = {}
+        unit_items = [item for item in self.scene.items() if isinstance(item, Unit)]
+        for i, unit in enumerate(unit_items):
+            self.index_unit_map[i] = unit
+            
+        # Additional debugging information
+        print(f"Prepared {len(self.unit_map)} units for playback")
+        print(f"Position map has {len(self.position_unit_map)} entries")
+        print(f"Index map has {len(self.index_unit_map)} entries")
         
 if __name__ == "__main__":
     app = QApplication(sys.argv)

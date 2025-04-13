@@ -70,13 +70,16 @@ def apply_network_fixes(network_manager):
     # Try to enhance socket connection handling
     original_connect = getattr(network_manager, 'connect_to_server', None)
     if original_connect and callable(original_connect):
-        def enhanced_connect_to_server(ip, port, *args, **kwargs):
-            result = original_connect(ip, port, *args, **kwargs)
+        # Get the connect_to_server method properly
+        def enhanced_connect_to_server(self, ip, port, max_retries=5):
+            # Call original function with exact same parameters
+            result = original_connect(ip, port, max_retries)
             # Add sleep after connection
             time.sleep(1.0)
             return result
         
         try:
+            # Preserve the method signature by binding to the instance
             network_manager.connect_to_server = enhanced_connect_to_server.__get__(network_manager)
             print("Enhanced connect_to_server with extended sleep")
         except:

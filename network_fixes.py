@@ -71,9 +71,9 @@ def apply_network_fixes(network_manager):
     original_connect = getattr(network_manager, 'connect_to_server', None)
     if original_connect and callable(original_connect):
         # Get the connect_to_server method properly
-        def enhanced_connect_to_server(self, ip, port, max_retries=5):
+        def enhanced_connect_to_server(self, ip, port):
             # Call original function with exact same parameters
-            result = original_connect(ip, port, max_retries)
+            result = original_connect(ip, port)
             # Add sleep after connection
             time.sleep(1.0)
             return result

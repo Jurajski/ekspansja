@@ -102,9 +102,22 @@ class Unit(QGraphicsItem):
             
         # In network game, only allow interaction if:
         # 1. It's our turn (player_role matches current_turn)
-        # 2. We own the unit (current_turn matches unit.owner) OR the unit is neutral
+        # 2. We own the unit (unit's owner matches player_role) OR the unit is neutral
         is_our_turn = self.main_window.current_turn == self.main_window.player_role
-        is_our_unit = self.owner == "neutral" or self.owner == self.main_window.current_turn
+        
+        # FIX: Check if we own the unit (compare to player_role, not current_turn)
+        is_our_unit = self.owner == "neutral" or self.owner == self.main_window.player_role
+        
+        # Debug print for interaction check
+        print(f"Interaction check - Unit owner: {self.owner}, Current turn: {self.main_window.current_turn}, Player role: {self.main_window.player_role}")
+        print(f"Can interact? is_our_turn: {is_our_turn}, is_our_unit: {is_our_unit}, Result: {is_our_turn and is_our_unit}")
+        
+        # Debug print for client interaction check
+        if self.main_window.player_role == "pc":
+            print(f"[CLIENT] Interaction check - Unit owner: {self.owner}, Current turn: {self.main_window.current_turn}")
+            print(f"[CLIENT] Is my turn? {is_our_turn} (current_turn:{self.main_window.current_turn}==player_role:{self.main_window.player_role})")
+            print(f"[CLIENT] Is my unit? {is_our_unit} (owner:{self.owner}==player_role:{self.main_window.player_role} or neutral)") 
+            print(f"[CLIENT] Final permission: {is_our_turn and is_our_unit}")
         
         return is_our_turn and is_our_unit
         
@@ -538,10 +551,10 @@ class MainWindow(QMainWindow):
                 # Force scene update to refresh connection lines
                 self.scene.update()
         
-        # After processing remote action, it's our turn
-        if self.current_turn != self.player_role:
-            self.current_turn = self.player_role
-            self.start_turn()
+        # Update status message to show action was received
+        self.statusBar().showMessage(f"Received opponent's {action_type} action - waiting for turn change...")
+        
+        # Note: We don't switch turns here - we'll wait for the explicit TURN_CHANGE message
 
     def apply_network_game_state(self, game_state):
         """Apply game state received from network"""
@@ -765,7 +778,7 @@ class MainWindow(QMainWindow):
         if self.game_mode == "Network Game" and self.current_turn != self.player_role:
             # Only show waiting message if we're properly connected
             if self.network_game_ready:
-                print(f"Waiting for opponent's move (Turn: {self.current_turn})")
+                print(f"Waiting for opponent's move (Turn: {self.current_turn}, Your role: {self.player_role})")
                 self.statusBar().showMessage(f"Waiting for opponent's move...")
                 self.time_remaining = 0
                 self.skip_button.setEnabled(False)
@@ -776,17 +789,8 @@ class MainWindow(QMainWindow):
                 self.skip_button.setEnabled(False)
             return
         
-        # Update turn indicator
-        if self.current_turn == "player":
-            self.turn_label.setText("Current Turn: GREEN PLAYER")
-            self.turn_label.setStyleSheet("font-weight: bold; color: green; font-size: 14px; margin: 0px 10px;")
-            self.turn_progress.setStyleSheet("QProgressBar { border: 1px solid gray; border-radius: 3px; background: white; } "
-                                           "QProgressBar::chunk { background-color: green; }")
-        else:
-            self.turn_label.setText("Current Turn: RED PLAYER")
-            self.turn_label.setStyleSheet("font-weight: bold; color: red; font-size: 14px; margin: 0px 10px;")
-            self.turn_progress.setStyleSheet("QProgressBar { border: 1px solid gray; border-radius: 3px; background: white; } "
-                                           "QProgressBar::chunk { background-color: red; }")
+        # Update UI - now moved to update_turn_indicator method
+        self.update_turn_indicator()
         
         # Enable skip button for local turns
         self.skip_button.setEnabled(True)
@@ -810,19 +814,46 @@ class MainWindow(QMainWindow):
         self.turn_timer.stop()
         self.progress_timer.stop()
         
-        # In network mode, we only change turns locally if not waiting for opponent
+        # In network mode, only apply visual updates for turn change
+        # The actual turn state is controlled by action_performed and network messages
         if self.game_mode == "Network Game" and self.network_game_ready:
-            # In network game, only switch to opponent's turn if we're in control:
+            # Just update UI for the new turn state
             if self.current_turn == self.player_role:
-                self.current_turn = self.opponent_role
-                print(f"Switched turn to opponent: {self.opponent_role}")
-            # Otherwise we wait for opponent's action
+                # It's now our turn
+                print(f"Starting our turn: {self.player_role}")
+            else:
+                # It's opponent's turn
+                print(f"Starting opponent's turn: {self.opponent_role}")
         else:
             # For local games, switch normally
             self.current_turn = "pc" if self.current_turn == "player" else "player"
             print(f"Switched turn to: {self.current_turn}")
         
+        # Always start the new turn (will handle network mode correctly)
+        self.update_turn_indicator()
         self.start_turn()
+
+    def update_turn_indicator(self):
+        """Update the turn indicator UI to match current_turn"""
+        # Update turn indicator
+        if self.current_turn == "player":
+            self.turn_label.setText("Current Turn: GREEN PLAYER")
+            self.turn_label.setStyleSheet("font-weight: bold; color: green; font-size: 14px; margin: 0px 10px;")
+            self.turn_progress.setStyleSheet("QProgressBar { border: 1px solid gray; border-radius: 3px; background: white; } "
+                                           "QProgressBar::chunk { background-color: green; }")
+        else:
+            self.turn_label.setText("Current Turn: RED PLAYER")
+            self.turn_label.setStyleSheet("font-weight: bold; color: red; font-size: 14px; margin: 0px 10px;")
+            self.turn_progress.setStyleSheet("QProgressBar { border: 1px solid gray; border-radius: 3px; background: white; } "
+                                           "QProgressBar::chunk { background-color: red; }")
+        
+        # Debug output to verify turn state
+        print(f"Turn indicator updated: current_turn={self.current_turn}")
+        print(f"Is it my turn? {self.current_turn == self.player_role}")
+        
+        # Force redraw of UI components
+        self.turn_label.update()
+        self.turn_progress.update()
 
     def show_config_dialog(self):
         """Show the game configuration dialog"""
@@ -856,8 +887,11 @@ class MainWindow(QMainWindow):
         
         # Set player roles based on network role
         if self.network_role == "server":
-            self.player_role = "player"
+            self.player_role = "player"  # Host is always GREEN
             self.opponent_role = "pc"
+            # Host always starts first in a new network game
+            self.current_turn = "player"
+            print(f"Server initialized: my role={self.player_role}, opponent={self.opponent_role}, turn={self.current_turn}")
             # Start the server
             print(f"Starting server on {self.network_ip}:{self.network_port}")
             self.statusBar().showMessage("Starting server and waiting for client...")
@@ -865,9 +899,12 @@ class MainWindow(QMainWindow):
             # Add delay before starting server to ensure ports are released
             QTimer.singleShot(1000, lambda: self.start_server_with_delay())
         else:
-            # As client, we're the second player
-            self.player_role = "pc"
+            # As client, we're the second player (RED)
+            self.player_role = "pc"  # Client is always RED
             self.opponent_role = "player"
+            # Client waits for host to take the first turn
+            self.current_turn = "player"
+            print(f"Client initialized: my role={self.player_role}, opponent={self.opponent_role}, turn={self.current_turn}")
             # Connect to server
             print(f"Connecting to server at {self.network_ip}:{self.network_port}")
             self.statusBar().showMessage(f"Connecting to server at {self.network_ip}:{self.network_port}...")
@@ -912,6 +949,9 @@ class MainWindow(QMainWindow):
                 # Client is waiting for the initial game state
                 self.statusBar().showMessage("Connected to server. Waiting for game to start...")
                 print("Waiting for initial game state from server")
+                
+                # Prepare game for network play by resetting
+                self.reset_level()
         else:
             print(f"Network connection failed: {message}")
             QMessageBox.critical(self, "Network Error", message)
@@ -1060,30 +1100,91 @@ class MainWindow(QMainWindow):
         elif message.type == NetworkMessage.GAME_STATE:
             # Received game state update
             print("Received game state from server")
+            
+            # As client, restart game before applying network state
+            if self.network_role == "client":
+                self.reset_level()
+                
+            # Apply the received state
             self.apply_network_game_state(message.data)
             self.network_game_ready = True
-        
+    
         elif message.type == NetworkMessage.ACTION:
             # Process received action
             action_type = message.data.get("type", "unknown")
             print(f"Received network action: {action_type}")
             self.process_network_action(message.data)
-        
+            
+            # After processing the action, wait for explicit turn change
+            # We don't switch turns here anymore to avoid race conditions
+    
         elif message.type == NetworkMessage.TURN_CHANGE:
-            # Turn changed
-            next_turn = message.data.get("next_turn")
-            print(f"Received turn change: next turn = {next_turn}")
+            # Turn changed message contains complete turn info
+            turn_data = message.data
+            
+            # FIX: Check that turn_data is a dictionary
+            if not isinstance(turn_data, dict):
+                print(f"Error: Invalid turn change data format: {turn_data}")
+                self.statusBar().showMessage(f"Error: Invalid turn change data format")
+                return
+                
+            next_turn = turn_data.get("next_turn")
+            action_id = turn_data.get("action_id", "unknown")
+            
+            # FIX: Add type checking for next_turn
+            if not isinstance(next_turn, str):
+                print(f"Error: Invalid next_turn value: {next_turn}")
+                self.statusBar().showMessage("Error: Invalid turn data received")
+                # Try to extract from the dictionary if possible
+                if isinstance(turn_data, dict) and "next_turn" in turn_data and isinstance(turn_data["next_turn"], str):
+                    next_turn = turn_data["next_turn"]
+                    print(f"Extracted next_turn string: {next_turn}")
+                else:
+                    # Use a fallback based on current player role
+                    next_turn = self.opponent_role if self.current_turn == self.player_role else self.player_role
+                    print(f"Using fallback next_turn: {next_turn}")
+            
+            print(f"Received turn change: next_turn={next_turn}, action_id={action_id}")
+            print(f"Current player role: {self.player_role}, Opponent role: {self.opponent_role}")
+            
             if next_turn:
-                # Only switch turn if it's our turn and we're ready
-                if self.network_game_ready and next_turn == self.player_role:
-                    self.current_turn = next_turn
-                    self.start_turn()
+                # Only switch turn if it's valid and we're in a network game
+                if self.game_mode == "Network Game" and self.network_game_ready:
+                    # Update our current turn state 
+                    previous_turn = self.current_turn
+                    self.current_turn = next_turn  # This value must be a string like "player" or "pc"
+                    print(f"Turn changed from {previous_turn} to {next_turn}")
+                    
+                    # Debug verification that current_turn is now a string
+                    print(f"Current turn type: {type(self.current_turn)}, value: {self.current_turn}")
+                    
+                    # Debug output to help diagnose turn issues
+                    print(f"Is it my turn now? {next_turn == self.player_role}")
+                    print(f"Current turn: {self.current_turn}, My role: {self.player_role}")
+                    
+                    # Update UI based on whether it's our turn now
+                    if next_turn == self.player_role:
+                        self.statusBar().showMessage(f"Your turn now! ({self.player_role})")
+                        # Make sure UI reflects it's our turn
+                        self.update_turn_indicator()
+                        self.start_turn()
+                    else:
+                        self.statusBar().showMessage(f"Waiting for opponent's move... ({next_turn}'s turn)")
+                        # Disable our controls since it's not our turn
+                        self.turn_timer.stop()
+                        self.progress_timer.stop()
+                        self.skip_button.setEnabled(False)
+                        # Still update the turn indicator
+                        self.update_turn_indicator()
 
     def show_client_connected_dialog(self):
         """Show dialog indicating a client has connected"""
         if self.network_manager.valid_connection:
             print("Verified client connection! Showing dialog and sending game state")
             QMessageBox.information(self, "Network Game", "Client connected! The game will now begin.")
+            
+            # Restart game before sending initial state
+            self.reset_level()
             
             # Add delay before sending game state to ensure connection is stable
             QTimer.singleShot(1000, self.send_initial_game_state)
@@ -1104,7 +1205,10 @@ class MainWindow(QMainWindow):
         game_state = self.get_current_game_state()
         # Add network-specific details
         game_state["network_role"] = self.network_role
-        game_state["current_turn"] = "player"  # Server always starts as player        
+        
+        # Always set initial turn to "player" (GREEN) which is the host
+        game_state["current_turn"] = "player"
+        self.current_turn = "player"  # Make sure our local state matches
         
         # Sleep before sending to ensure client socket is ready
         import time
@@ -1115,6 +1219,8 @@ class MainWindow(QMainWindow):
         if success:
             print("Game state sent successfully")
             self.network_game_ready = True
+            self.statusBar().showMessage("Game state sent. It's your turn (GREEN)!")
+            self.start_turn()
             
             # Add verification timer to check connection
             QTimer.singleShot(2000, self.verify_client_still_connected)       
@@ -1156,8 +1262,27 @@ class MainWindow(QMainWindow):
                 if action_data:
                     # Send action to remote player
                     self.network_manager.send_action(action_data)
-                    # Also notify about turn change
-                    self.network_manager.send_turn_change(self.opponent_role)
+                    
+                    # Calculate next turn
+                    next_turn = self.opponent_role
+                    
+                    # Send explicit turn change message
+                    print(f"Sending turn change to opponent. Next turn: {next_turn}")
+                    turn_message = {
+                        "next_turn": next_turn,
+                        "current_player": self.player_role,
+                        "action_id": id(action_data)  # Unique ID for this action
+                    }
+                    self.network_manager.send_turn_change(turn_message)
+                    self.statusBar().showMessage(f"Action sent to opponent. Switching to {next_turn}'s turn.")
+                    
+                    # Update our local turn state
+                    self.current_turn = next_turn
+                    
+                    # Force update of turn indicator UI
+                    self.update_turn_indicator()
+                    
+            # Switch turn locally (in single player or after sending network message)
             self.switch_turn()
         self.check_game_over()
 
@@ -1458,61 +1583,6 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Failed to apply game state: {str(e)}")
-            return False
-
-    def apply_network_game_state(self, game_state):
-        """Apply game state received from network"""
-        try:
-            # Update network roles from received game state
-            if "network_role" in game_state:
-                remote_role = game_state.get("network_role")
-                # Set our role as the opposite of the remote role
-                if remote_role == "server":
-                    self.network_role = "client"
-                    self.player_role = "pc"
-                    self.opponent_role = "player"
-                else:
-                    self.network_role = "server"
-                    self.player_role = "player"
-                    self.opponent_role = "pc"
-            
-            # Set the current turn
-            if "current_turn" in game_state:
-                self.current_turn = game_state.get("current_turn")
-            
-            # Apply the game state to our local game
-            success = self.apply_game_state(game_state)
-            
-            if success:
-                self.statusBar().showMessage("Network game state received and applied successfully")
-                print("Network game state applied successfully")
-                
-                # Apply connection fixes to ensure all connection lines are visible
-                network_connection_fix.apply_connection_fixes(self)
-                
-                # Make sure we have the correct turn state after loading
-                if self.current_turn == self.player_role:
-                    self.start_turn()
-                else:
-                    # Not our turn, just wait
-                    self.statusBar().showMessage("Waiting for opponent's move...")
-                    # Disable turn timer if it's not our turn
-                    self.turn_timer.stop()
-                    self.progress_timer.stop()
-                    self.skip_button.setEnabled(False)
-            else:
-                self.statusBar().showMessage("Failed to apply network game state")
-                print("Failed to apply network game state")
-                QMessageBox.warning(self, "Game State Error", "Failed to apply network game state")
-                
-            return success
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            error_msg = f"Error applying network game state: {str(e)}"
-            print(error_msg)
-            self.statusBar().showMessage(error_msg)
-            QMessageBox.critical(self, "Game State Error", error_msg)
             return False
 
     def close(self):
